@@ -3,7 +3,7 @@
 [Liliane Momeni*](https://www.robots.ox.ac.uk/~liliane/), [Gül Varol*](https://www.robots.ox.ac.uk/~gul), [Samuel Albanie*](https://www.robots.ox.ac.uk/~albanie/), [Triantafyllos Afouras](https://www.robots.ox.ac.uk/~afourast/) and [Andrew Zisserman](https://www.robots.ox.ac.uk/~az/),
 *Watch, read and lookup: learning to spot signs from multiple supervisors*, ACCV 2020.
 
-[[Project page]](https://www.robots.ox.ac.uk/~vgg/research/bsldict/)
+[[Project page]](https://www.robots.ox.ac.uk/~vgg/research/bsldict/) [[arXiv]](https://arxiv.org/abs/2010.04002)
 
 <p align="center">
 <img src="https://www.robots.ox.ac.uk/~gul/img/bsldict.jpg" height=300/>
