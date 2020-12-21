@@ -1,0 +1,9 @@
+__pycache__/
+*.py[cod]
+
+bsldict/bsldict_v1.pkl
+bsldict/videos_original/
+
+models/i3d.pth.tar
+models/mlp.pth.tar
+models/i3d_mlp.pth.tar

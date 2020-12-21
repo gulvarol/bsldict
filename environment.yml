@@ -1,0 +1,19 @@
+name: bsldict_env
+
+channels:
+  - pytorch
+  - conda-forge
+  - anaconda
+  - defaults
+
+dependencies:
+  - matplotlib
+  - opencv=4.5.0
+  - pip
+  - python=3.8.3
+  - pytorch=1.7.0=py3.8_cuda10.1.243_cudnn7.6.3_0
+  - tqdm
+  - wget
+  - youtube-dl
+  - pip:
+    - scikit-learn==0.23.2
