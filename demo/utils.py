@@ -18,6 +18,7 @@ from tqdm import tqdm
 sys.path.append("..")
 from bsldict.download_videos import download_hosted_video, download_youtube_video
 from models.i3d_mlp import i3d_mlp
+from models.i3d import InceptionI3d
 
 
 def viz_similarities(
@@ -137,6 +138,7 @@ def viz_similarities(
         if viz_with_dict:
             fig_img = np.vstack((dict_viz, fig_img))
         out_video.write(fig_img[:, :, (2, 1, 0)].astype("uint8"))
+        # cv2.imwrite(f"frames/frame_{t:04d}.png", fig_img[:, :, (2, 1, 0)].astype("uint8"))
         ax1.clear()
         time_line.remove()
         time_rect.remove()
@@ -160,7 +162,7 @@ def fig2data(fig):
     return buf
 
 
-def get_dictionary_frame(url, yid, v, color, res=256):
+def get_dictionary_frame(url, yid, v, color, res=256, rm_download=True):
     """
     1) Download the dictionary video to a temporary file location
         (with youtube-dl if it has a youtube-identifier, otherwise with wget),
@@ -180,7 +182,8 @@ def get_dictionary_frame(url, yid, v, color, res=256):
     """
     try:
         # Temporary file location
-        tmp = f"tmp_{time.time()}.mp4"
+        # tmp = f"tmp_{time.time()}.mp4"
+        tmp = f"tmp-{v}.mp4"
         if yid:
             # Download with youtube-dl
             download_youtube_video(yid, tmp)
@@ -207,8 +210,9 @@ def get_dictionary_frame(url, yid, v, color, res=256):
         )
         # BGR => RGB
         frame = frame[:, :, [2, 1, 0]]
-        # Remove temporary download
-        os.remove(tmp)
+        if rm_download:
+            # Remove temporary download
+            os.remove(tmp)
         return frame
     except:
         print(f"Could not download dictionary video {url}")
@@ -296,13 +300,20 @@ def prepare_input(
     return rgb
 
 
-def load_model(checkpoint_path: Path,) -> torch.nn.Module:
+def load_model(checkpoint_path: Path, arch: str) -> torch.nn.Module:
     """Load pre-trained checkpoint, put in eval mode.
     """
-    model = i3d_mlp()
+    if arch == "i3d_mlp":
+        model = i3d_mlp()
+    elif arch == "i3d":
+        model = InceptionI3d(num_classes=2281, num_in_frames=16, include_embds=True)
+    else:
+        raise ValueError(f"Unrecognized architecture {arch}")
     checkpoint = torch.load(str(checkpoint_path))
+    if arch == "i3d":
+        model = torch.nn.DataParallel(model)  # .cuda()
+        checkpoint = checkpoint["state_dict"]
     model.load_state_dict(checkpoint)
-    # model = torch.nn.DataParallel(model)  # .cuda()
     model.eval()
     return model
 
@@ -389,3 +400,151 @@ def color_normalize(x, mean, std):
         x[:, 1].sub_(mean[1]).div_(std[1])
         x[:, 2].sub_(mean[2]).div_(std[2])
     return x
+
+
+def viz_slide(
+    rgb: torch.Tensor,
+    t_mid: np.ndarray,
+    sim: np.ndarray,
+    similarity_thres: float,
+    keyword: str,
+    output_path: Path,
+    viz_with_dict: bool,
+    dict_video_links: tuple,
+    max_num_versions: int = 1,
+):
+    viz_with_dict = 0
+    """
+    Save a visualization video for talks, rearranged version of the function viz_similarities above
+    """
+    F = 16  # num_in_frames
+    # Put linebreaks for long strings every 40 chars
+    keyword = list(keyword)
+    max_num_chars_per_line = 40
+    num_linebreaks = int(len(keyword) / max_num_chars_per_line)
+    for lb in range(num_linebreaks):
+        pos = (lb + 1) * max_num_chars_per_line
+        keyword.insert(pos, "\n")
+    keyword = "".join(keyword)
+    keyword = f"Keyword: {keyword}"
+    num_frames = rgb.shape[1]
+    height = rgb.shape[2]
+    offset = height / 14
+    dict_video_urls, dict_youtube_ids = dict_video_links
+    num_versions = sim.shape[1]
+    ## delete this hack
+    # sim = sim[:, (3, 0, 1, 2, 3)]
+    ##
+    if num_versions > max_num_versions:
+        sim = sim[:, :max_num_versions]
+        num_versions = sim.shape[1]
+        dict_video_urls = dict_video_urls[:max_num_versions]
+        dict_youtube_ids = dict_youtube_ids[:max_num_versions]
+    fig = plt.figure(figsize=(6, 3 + num_versions * 3))
+    # 900, 300
+    figw, figh = fig.get_size_inches() * fig.dpi
+    figw, figh = int(figw), int(figh)
+    gs = gridspec.GridSpec(num_versions + 1, 1, height_ratios=[3] + num_versions * [1])
+    ax1 = plt.subplot(gs[0])
+    res = 256
+    num_dicts = len(dict_video_urls)
+    stacked_dicts = np.zeros((num_dicts, res, res, 3))
+    assert num_dicts == num_versions
+    for v, dict_vid_url in enumerate(dict_video_urls):
+        dict_color = list(mcolors.TABLEAU_COLORS.values())[v]
+        ax2 = plt.subplot(gs[v + 1])
+        sim_plot = ax2.plot(range(int(F / 2), int(F / 2) + sim.shape[0]), sim[:, v], color=dict_color)
+        # ax2.set_ylabel("Similarity")
+        ax2.set_xlabel("Time")
+        ax2.set_xlim(0, num_frames - 1)
+        ax2.set_ylim(sim.min(), sim.max() + 0.01)
+        # plt.savefig(f"plot-{v+1}.png")
+        if num_versions > 1:
+            plt.legend([f"v{v + 1}"], loc="upper right")
+            plt.savefig(f"plot-{v+1}-withlegend.png")
+
+        # dict_color = sim_plot[0].get_color()
+        yid = dict_youtube_ids[v]
+        dict_frame = get_dictionary_frame(
+            dict_vid_url, yid, v=f"v{v + 1}", color=dict_color, res=res, rm_download=False
+        )
+        stacked_dicts[v] = dict_frame
+    if viz_with_dict:
+        dict_viz = np.vstack(stacked_dicts)
+        dh, dw, _ = dict_viz.shape
+        # dh, dw = int(figw * dh / dw), figw
+        dh, dw = figh, int(figh * dw / dh)
+        dict_viz = cv2.resize(dict_viz, (dw, dh))
+    else:
+        # dh = 0
+        dw = 0
+
+    # Create videowriter
+    print(f"Saving visualization to {output_path}")
+    FOURCC = "mp4v"
+    fourcc = cv2.VideoWriter_fourcc(*FOURCC)
+    out_video = cv2.VideoWriter(str(output_path), fourcc, 25, (figw + dw, figh))
+
+    for t in tqdm(range(num_frames)):
+        img = cv2.resize(im_to_numpy(rgb[:, t]), (256, 256))
+        ax1.imshow(img)
+        ax1.set_title("Continuous input")
+        t_ix = abs(t_mid - t).argmin()
+        time_lines = []
+        time_rects = []
+        for v in range(num_dicts):
+            sim_t = sim[t_ix, v]
+            # Title
+            sim_text = f"Similarity: {sim_t:.2f}"
+            ax2 = plt.subplot(gs[v + 1])
+            ax2.set_title(sim_text)
+            right_frame = ax2.spines["right"]
+            right_frame.set_visible(False)
+            top_frame = ax2.spines["top"]
+            top_frame.set_visible(False)
+            time_line = ax2.axvline(x=t_ix)
+            time_rect = ax2.add_patch(
+                patches.Rectangle(
+                    (t_ix, ax2.get_ylim()[0]), F, np.diff(ax2.get_ylim())[0], alpha=0.5,
+                )
+            )
+            time_lines.append(time_line)
+            time_rects.append(time_rect)
+        sim_color = "red"
+        max_sim_t = max(sim[t_ix, :])
+        if max_sim_t >= similarity_thres:
+            sim_color = "green"
+            # Rectangle whenever above a sim thres
+            ax1.add_patch(
+                patches.Rectangle(
+                    (0, 0), 256, 256, linewidth=10, edgecolor="g", facecolor="none"
+                )
+            )
+        # Display keyword
+        ax1.text(
+            offset,
+            256,
+            keyword,
+            fontsize=12,
+            fontweight="bold",
+            color="white",
+            verticalalignment="top",
+            bbox=dict(facecolor=sim_color, alpha=0.9),
+        )
+        ax1.axis("off")
+        if t == 0:
+            plt.tight_layout()
+        fig_img = fig2data(fig)
+        fig_img = np.array(Image.fromarray(fig_img))
+        if viz_with_dict:
+            fig_img = np.hstack((dict_viz, fig_img))
+        out_video.write(fig_img[:, :, (2, 1, 0)].astype("uint8"))
+        cv2.imwrite(f"frames/frame_{t:04d}.png", fig_img[:, :, (2, 1, 0)].astype("uint8"))
+        ax1.clear()
+        for v in range(num_dicts):
+            time_lines[v].remove()
+            time_rects[v].remove()
+    out_video.release()
+    msg = (f"Did not find a generated video at {output_path}, is the FOURCC {FOURCC} "
+           f"supported by your opencv install?")
+    assert output_path.exists(), msg

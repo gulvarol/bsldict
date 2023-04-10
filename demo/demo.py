@@ -13,6 +13,7 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import scipy.io as sio
 import torch
 from sklearn.metrics import pairwise_distances
 from tqdm import tqdm
@@ -23,18 +24,22 @@ from utils import (
     prepare_input,
     sliding_windows,
     viz_similarities,
+    viz_slide,
 )
 
 
 def main(
     checkpoint_path: Path,
+    arch: str,
     bsldict_metadata_path: Path,
+    bsldict_features_path: Path,
     keyword: str,
     input_path: Path,
     viz: bool,
     output_path: Path,
     viz_with_dict: bool,
     gen_gif: bool,
+    slide_materials: bool,
     similarity_thres: float,
     batch_size: int,
     stride: int = 1,
@@ -56,12 +61,16 @@ def main(
     The parameters are explained in the help value for each argument at the bottom of this code file.
 
     :param checkpoint_path: default `../models/i3d_mlp.pth.tar` should be used
+    :param arch: A combined `i3d_mlp` or only a single `i3d` architecture
     :param bsldict_metadata_path: default `../bsldict/bsldict_v1.pkl` should be used
+    :param bsldict_features_path: an alternative vid_features.mat path to experiment with other i3d architectures
     :param keyword: a search keyword, by default "apple", should exist in the dictionary
     :param input_path: path to the continuous test video
     :param viz: if 1, saves .mp4 visualization video
     :param output_path: path to the .mp4 visualization (used if viz)
     :param viz_with_dict: if 1, adds the dictionary frames to the visualization (downloads dictionary videos and takes middle frames)
+    :param gen_gif: if 1, also saves the video as a gif
+    :param slide_materials: if 1, also saves some files to manually make slides for presentations
     :param similarity_thres: similarity threshold that determines when a spotting occurs, 0.7 is observed to be a good value
     :param batch_size: how many sliding window clips to group when applying the model, this depends on the hardware resources, but doesn't change the results
     :param stride: how many frames to stride when applying sliding windows to the input video (1 obtains best performance)
@@ -81,18 +90,28 @@ def main(
     # Find dictionary videos whose sign corresponds to the search key
     dict_ix = np.where(np.array(bsldict_metadata["videos"]["word"]) == keyword)[0]
     print(f"Found {len(dict_ix)} dictionary videos for the keyword {keyword}.")
-    dict_features = np.array(bsldict_metadata["videos"]["features"]["mlp"])[dict_ix]
+    if "features" in bsldict_metadata["videos"]:
+        dict_features = np.array(bsldict_metadata["videos"]["features"]["mlp"])[dict_ix]
+    else:
+        print(f"Loading BSLDict feature data from {bsldict_features_path}")
+        dict_features_all = sio.loadmat(bsldict_features_path)["vid_features"]
+        assert dict_features_all.shape[0] == len(bsldict_metadata["videos"]["word"])
+        dict_features = dict_features_all[dict_ix]
     dict_video_urls = np.array(bsldict_metadata["videos"]["video_link_db"])[dict_ix]
-    dict_youtube_ids = np.array(bsldict_metadata["videos"]["youtube_identifier_db"])[
-        dict_ix
-    ]
+    if "youtube_identifier_db" in bsldict_metadata["videos"]:
+        dict_youtube_ids = np.array(bsldict_metadata["videos"]["youtube_identifier_db"])[
+            dict_ix
+        ]
+    else:
+        dict_youtube_ids = [None] * len(dict_ix)
+
     for vi, v in enumerate(dict_video_urls):
         print(f"v{vi + 1}: {v}")
 
     msg = "Please download the pretrained model at models/download_models.sh"
     assert checkpoint_path.exists(), msg
     print(f"Loading model from {checkpoint_path}")
-    model = load_model(checkpoint_path=checkpoint_path)
+    model = load_model(checkpoint_path=checkpoint_path, arch=arch)
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     print(f"Moving model to {device}")
     model = model.to(device)
@@ -115,7 +134,7 @@ def main(
         # Forward pass
         out = model(inp)
         continuous_features = np.append(
-            continuous_features, out["embds"].cpu().detach().numpy(), axis=0
+            continuous_features, out["embds"].cpu().detach().squeeze(2).squeeze(2).squeeze(2).numpy(), axis=0
         )
     # Compute distance between continuous and dictionary features
     dst = pairwise_distances(continuous_features, dict_features, metric="cosine")
@@ -155,6 +174,18 @@ def main(
             cmd = f"ffmpeg -loglevel panic -y -i {output_path} -f gif {gif_path}"
             print(f"Generating gif of output at {gif_path}")
             os.system(cmd)
+        # Save materials to make slides
+        if slide_materials:
+            viz_slide(
+                rgb=rgb_orig,
+                t_mid=t_mid,
+                sim=sim,
+                similarity_thres=similarity_thres,
+                keyword=keyword,
+                output_path=output_path,
+                viz_with_dict=viz_with_dict,
+                dict_video_links=(dict_video_urls, dict_youtube_ids),
+            )
 
 
 if __name__ == "__main__":
@@ -166,10 +197,23 @@ if __name__ == "__main__":
         help="Path to combined i3d_mlp model.",
     )
     p.add_argument(
+        "--arch",
+        type=str,
+        default="i3d_mlp",
+        help="Options i3d_mlp or i3d",
+        choices=["i3d", "i3d_mlp"],
+    )
+    p.add_argument(
         "--bsldict_metadata_path",
         type=Path,
         default="../bsldict/bsldict_v1.pkl",
-        help="Path to bsldict data",
+        help="Path to bsldict metadata",
+    )
+    p.add_argument(
+        "--bsldict_features_path",
+        type=Path,
+        default="/users/gul/checkpoint/bobsl/c2281_16f_pad10sec_m8_-15_4_d0.8_-3_22_anon/test_025_sdict_all/vid_features.mat",
+        help="Path to bsldict feature data",
     )
     p.add_argument(
         "--keyword",
@@ -203,6 +247,12 @@ if __name__ == "__main__":
         type=bool,
         default=1,
         help="if true, also generate a .gif file of the output",
+    )
+    p.add_argument(
+        "--slide_materials",
+        type=bool,
+        default=1,
+        help="if true, also generate visuals for making slides manually",
     )
     p.add_argument(
         "--similarity_thres",
